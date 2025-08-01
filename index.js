@@ -15,8 +15,8 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// 数据库初始化
-const dbPath = process.env.NODE_ENV === 'production' ? ':memory:' : './todoapp.db';
+// 数据库初始化 - 使用持久化数据库
+const dbPath = './todoapp.db';
 const db = new sqlite3.Database(dbPath);
 
 // 创建用户表
