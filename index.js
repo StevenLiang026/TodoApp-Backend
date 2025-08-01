@@ -2,44 +2,22 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const sqlite3 = require('sqlite3').verbose();
+const { createClient } = require('@supabase/supabase-js');
 const bodyParser = require('body-parser');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'todoapp_secret_key_2024';
 
+// Supabase配置
+const supabaseUrl = 'https://mgyugmeceypobpjmmvxp.supabase.co';
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1neXVnbWVjZXlwb2Jwam1tdnhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQwNDUwMjgsImV4cCI6MjA2OTYyMTAyOH0.hmfdCwR6RQepaJWa9tGl2A00S5aV8B8YB9OPL3DrdXs';
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 // 中间件
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-
-// 数据库初始化 - 使用持久化数据库
-const dbPath = './todoapp.db';
-const db = new sqlite3.Database(dbPath);
-
-// 创建用户表
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    db.run(`CREATE TABLE IF NOT EXISTS todos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        completed BOOLEAN DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users (id)
-    )`);
-});
 
 // JWT验证中间件
 const authenticateToken = (req, res, next) => {
@@ -62,8 +40,9 @@ const authenticateToken = (req, res, next) => {
 // 根路由
 app.get('/', (req, res) => {
     res.json({ 
-        message: 'TodoApp 后端API服务器运行中',
-        version: '1.0.0',
+        message: 'TodoApp 后端API服务器运行中 (Supabase版本)',
+        version: '2.0.0',
+        database: 'Supabase PostgreSQL',
         endpoints: {
             register: 'POST /api/register',
             login: 'POST /api/login',
@@ -83,51 +62,56 @@ app.post('/api/register', async (req, res) => {
         }
 
         // 检查用户是否已存在
-        db.get('SELECT * FROM users WHERE username = ? OR email = ?', [username, email], async (err, row) => {
-            if (err) {
-                return res.status(500).json({ error: '数据库错误' });
+        const { data: existingUser, error: checkError } = await supabase
+            .from('users')
+            .select('*')
+            .or(`username.eq.${username},email.eq.${email}`)
+            .single();
+
+        if (existingUser) {
+            return res.status(400).json({ error: '用户名或邮箱已存在' });
+        }
+
+        // 加密密码
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // 插入新用户
+        const { data: newUser, error: insertError } = await supabase
+            .from('users')
+            .insert([
+                { username, email, password: hashedPassword }
+            ])
+            .select()
+            .single();
+
+        if (insertError) {
+            console.error('注册错误:', insertError);
+            return res.status(500).json({ error: '注册失败' });
+        }
+
+        const token = jwt.sign(
+            { userId: newUser.id, username: newUser.username },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.status(201).json({
+            message: '注册成功',
+            token: token,
+            user: {
+                id: newUser.id,
+                username: newUser.username,
+                email: newUser.email
             }
-
-            if (row) {
-                return res.status(400).json({ error: '用户名或邮箱已存在' });
-            }
-
-            // 加密密码
-            const hashedPassword = await bcrypt.hash(password, 10);
-
-            // 插入新用户
-            db.run('INSERT INTO users (username, email, password) VALUES (?, ?, ?)', 
-                [username, email, hashedPassword], 
-                function(err) {
-                    if (err) {
-                        return res.status(500).json({ error: '注册失败' });
-                    }
-
-                    const token = jwt.sign(
-                        { userId: this.lastID, username: username },
-                        JWT_SECRET,
-                        { expiresIn: '24h' }
-                    );
-
-                    res.status(201).json({
-                        message: '注册成功',
-                        token: token,
-                        user: {
-                            id: this.lastID,
-                            username: username,
-                            email: email
-                        }
-                    });
-                }
-            );
         });
     } catch (error) {
+        console.error('注册服务器错误:', error);
         res.status(500).json({ error: '服务器错误' });
     }
 });
 
 // 用户登录
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
 
@@ -135,115 +119,157 @@ app.post('/api/login', (req, res) => {
             return res.status(400).json({ error: '用户名和密码都是必填项' });
         }
 
-        db.get('SELECT * FROM users WHERE username = ? OR email = ?', [username, username], async (err, user) => {
-            if (err) {
-                return res.status(500).json({ error: '数据库错误' });
+        // 查找用户
+        const { data: user, error: findError } = await supabase
+            .from('users')
+            .select('*')
+            .or(`username.eq.${username},email.eq.${username}`)
+            .single();
+
+        if (findError || !user) {
+            return res.status(400).json({ error: '用户不存在' });
+        }
+
+        // 验证密码
+        const validPassword = await bcrypt.compare(password, user.password);
+        if (!validPassword) {
+            return res.status(400).json({ error: '密码错误' });
+        }
+
+        const token = jwt.sign(
+            { userId: user.id, username: user.username },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.json({
+            message: '登录成功',
+            token: token,
+            user: {
+                id: user.id,
+                username: user.username,
+                email: user.email
             }
-
-            if (!user) {
-                return res.status(400).json({ error: '用户不存在' });
-            }
-
-            const validPassword = await bcrypt.compare(password, user.password);
-            if (!validPassword) {
-                return res.status(400).json({ error: '密码错误' });
-            }
-
-            const token = jwt.sign(
-                { userId: user.id, username: user.username },
-                JWT_SECRET,
-                { expiresIn: '24h' }
-            );
-
-            res.json({
-                message: '登录成功',
-                token: token,
-                user: {
-                    id: user.id,
-                    username: user.username,
-                    email: user.email
-                }
-            });
         });
     } catch (error) {
+        console.error('登录服务器错误:', error);
         res.status(500).json({ error: '服务器错误' });
     }
 });
 
 // 获取用户的待办事项
-app.get('/api/todos', authenticateToken, (req, res) => {
-    db.all('SELECT * FROM todos WHERE user_id = ? ORDER BY created_at DESC', [req.user.userId], (err, rows) => {
-        if (err) {
+app.get('/api/todos', authenticateToken, async (req, res) => {
+    try {
+        const { data: todos, error } = await supabase
+            .from('todos')
+            .select('*')
+            .eq('user_id', req.user.userId)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('获取待办事项错误:', error);
             return res.status(500).json({ error: '获取待办事项失败' });
         }
-        res.json({ todos: rows });
-    });
+
+        res.json({ todos: todos || [] });
+    } catch (error) {
+        console.error('获取待办事项服务器错误:', error);
+        res.status(500).json({ error: '服务器错误' });
+    }
 });
 
 // 创建新的待办事项
-app.post('/api/todos', authenticateToken, (req, res) => {
-    const { title, description } = req.body;
+app.post('/api/todos', authenticateToken, async (req, res) => {
+    try {
+        const { title, description } = req.body;
 
-    if (!title) {
-        return res.status(400).json({ error: '标题是必填项' });
-    }
+        if (!title) {
+            return res.status(400).json({ error: '标题是必填项' });
+        }
 
-    db.run('INSERT INTO todos (user_id, title, description) VALUES (?, ?, ?)', 
-        [req.user.userId, title, description || ''], 
-        function(err) {
-            if (err) {
-                return res.status(500).json({ error: '创建待办事项失败' });
-            }
-
-            res.status(201).json({
-                message: '待办事项创建成功',
-                todo: {
-                    id: this.lastID,
-                    title: title,
+        const { data: newTodo, error } = await supabase
+            .from('todos')
+            .insert([
+                { 
+                    user_id: req.user.userId, 
+                    title, 
                     description: description || '',
                     completed: false
                 }
-            });
+            ])
+            .select()
+            .single();
+
+        if (error) {
+            console.error('创建待办事项错误:', error);
+            return res.status(500).json({ error: '创建待办事项失败' });
         }
-    );
+
+        res.status(201).json({
+            message: '待办事项创建成功',
+            todo: newTodo
+        });
+    } catch (error) {
+        console.error('创建待办事项服务器错误:', error);
+        res.status(500).json({ error: '服务器错误' });
+    }
 });
 
 // 更新待办事项
-app.put('/api/todos/:id', authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const { title, description, completed } = req.body;
+app.put('/api/todos/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title, description, completed } = req.body;
 
-    db.run('UPDATE todos SET title = ?, description = ?, completed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
-        [title, description, completed ? 1 : 0, id, req.user.userId],
-        function(err) {
-            if (err) {
-                return res.status(500).json({ error: '更新待办事项失败' });
-            }
+        const { data: updatedTodo, error } = await supabase
+            .from('todos')
+            .update({ 
+                title, 
+                description, 
+                completed,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .eq('user_id', req.user.userId)
+            .select()
+            .single();
 
-            if (this.changes === 0) {
-                return res.status(404).json({ error: '待办事项不存在' });
-            }
-
-            res.json({ message: '待办事项更新成功' });
+        if (error || !updatedTodo) {
+            console.error('更新待办事项错误:', error);
+            return res.status(404).json({ error: '待办事项不存在或更新失败' });
         }
-    );
+
+        res.json({ 
+            message: '待办事项更新成功',
+            todo: updatedTodo
+        });
+    } catch (error) {
+        console.error('更新待办事项服务器错误:', error);
+        res.status(500).json({ error: '服务器错误' });
+    }
 });
 
 // 删除待办事项
-app.delete('/api/todos/:id', authenticateToken, (req, res) => {
-    const { id } = req.params;
+app.delete('/api/todos/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
 
-    db.run('DELETE FROM todos WHERE id = ? AND user_id = ?', [id, req.user.userId], function(err) {
-        if (err) {
+        const { error } = await supabase
+            .from('todos')
+            .delete()
+            .eq('id', id)
+            .eq('user_id', req.user.userId);
+
+        if (error) {
+            console.error('删除待办事项错误:', error);
             return res.status(500).json({ error: '删除待办事项失败' });
         }
 
-        if (this.changes === 0) {
-            return res.status(404).json({ error: '待办事项不存在' });
-        }
-
         res.json({ message: '待办事项删除成功' });
-    });
+    } catch (error) {
+        console.error('删除待办事项服务器错误:', error);
+        res.status(500).json({ error: '服务器错误' });
+    }
 });
 
 // 错误处理中间件
@@ -258,7 +284,7 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`TodoApp 后端服务器运行在端口 ${PORT}`);
+    console.log(`TodoApp 后端服务器运行在端口 ${PORT} (Supabase版本)`);
 });
 
 module.exports = app;
