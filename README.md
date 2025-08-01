@@ -1,14 +1,15 @@
 # TodoApp 后端API服务器
 
-这是为Android TodoApp应用提供后端服务的Node.js API服务器。
+这是为Android TodoApp应用提供后端服务的Node.js API服务器，使用Supabase作为云数据库。
 
 ## 功能特性
 
 - 用户注册和登录
 - JWT身份验证
 - 待办事项CRUD操作
-- SQLite数据库存储
-- 密码加密存储
+- Supabase PostgreSQL云数据库
+- 密码bcrypt加密存储
+- 数据真正持久化
 
 ## API接口
 
@@ -76,12 +77,11 @@ DELETE /api/todos/:id
 Authorization: Bearer <token>
 ```
 
-## 部署到Vercel
+## 部署信息
 
-1. 将代码推送到GitHub仓库
-2. 在Vercel中导入项目
-3. 设置环境变量（如果需要）
-4. 部署完成
+- **线上地址**: https://todo-app-backend-ten-gamma.vercel.app/
+- **GitHub仓库**: https://github.com/StevenLiang026/TodoApp-Backend.git
+- **自动部署**: GitHub推送自动触发Vercel部署
 
 ## 本地开发
 
@@ -98,8 +98,9 @@ npm start
 
 ## 环境变量
 
-- `JWT_SECRET`: JWT签名密钥（生产环境建议设置复杂密钥）
+- `JWT_SECRET`: JWT签名密钥（默认: todoapp_secret_key_2024）
 - `NODE_ENV`: 运行环境（production/development）
+- Supabase配置已内置在代码中
 
 ## Android应用集成
 
@@ -110,39 +111,54 @@ npm start
 3. 存储JWT token用于身份验证
 4. 处理API响应和错误
 
-### 示例API调用（Java/Kotlin）
+### 示例API调用
 
-```java
-// 注册用户
-POST https://your-vercel-app.vercel.app/api/register
-{
-  "username": "testuser",
-  "email": "test@example.com", 
-  "password": "password123"
-}
+```bash
+# 注册用户
+curl -X POST https://todo-app-backend-ten-gamma.vercel.app/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "email": "test@example.com", 
+    "password": "password123"
+  }'
 
-// 登录
-POST https://your-vercel-app.vercel.app/api/login
-{
-  "username": "testuser",
-  "password": "password123"
-}
+# 登录
+curl -X POST https://todo-app-backend-ten-gamma.vercel.app/api/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "password": "password123"
+  }'
+
+# 获取待办事项（需要JWT令牌）
+curl -X GET https://todo-app-backend-ten-gamma.vercel.app/api/todos \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-## 数据库结构
+## 数据库结构 (Supabase PostgreSQL)
 
 ### users表
-- id: 用户ID（主键）
-- username: 用户名（唯一）
-- email: 邮箱（唯一）
-- password: 加密密码
-- created_at: 创建时间
+- id: 用户ID（主键，自增）
+- username: 用户名（唯一，VARCHAR）
+- email: 邮箱（唯一，VARCHAR）
+- password: bcrypt加密密码（VARCHAR）
+- created_at: 创建时间（TIMESTAMP）
+- updated_at: 更新时间（TIMESTAMP）
 
 ### todos表
-- id: 待办事项ID（主键）
-- user_id: 用户ID（外键）
-- title: 标题
-- description: 描述
-- completed: 完成状态
-- created_at: 创建时间
-- updated_at: 更新时间
+- id: 待办事项ID（主键，自增）
+- user_id: 用户ID（外键，关联users.id）
+- title: 标题（VARCHAR，必填）
+- description: 描述（TEXT，可选）
+- completed: 完成状态（BOOLEAN，默认false）
+- created_at: 创建时间（TIMESTAMP）
+- updated_at: 更新时间（TIMESTAMP）
+
+## 技术栈
+
+- **后端框架**: Express.js
+- **数据库**: Supabase PostgreSQL
+- **身份验证**: JWT + bcryptjs
+- **部署平台**: Vercel
+- **版本控制**: Git + GitHub
